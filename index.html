@@ -1602,8 +1602,59 @@ function desirability(y, criterion, target, yLow, yHigh) {
 // MÓDULO: encode.js — Codificação/decodificação
 // ================================================================
 
+// ---- Funções genéricas (usadas internamente e por BBD/Fatorial) ----
+// Mapeiam: coded=-1 → min,  coded=+1 → max
 function encode(val, min, max) { return 2*(val-min)/(max-min)-1; }
 function decode(coded, min, max) { return min + (coded+1)/2*(max-min); }
+
+/**
+ * decodeReal — conversão codificado → real CORRETA para cada tipo de design.
+ *
+ * Para PCC:  os extremos REAIS correspondem aos pontos AXIAIS (±α), não a ±1.
+ *   Fórmula: X_real = X_centro + (coded / α) × (X_max - X_min) / 2
+ *   Onde X_centro = (X_max + X_min) / 2
+ *   Resultado: coded = -α → X_min,  coded = +α → X_max,  coded = 0 → X_centro
+ *
+ * Para BBD / Fatorial / D-Optimal: mapeia ±1 → min/max (fórmula original).
+ *
+ * @param {number} coded - valor codificado (ex: -1.682, -1, 0, +1, +1.682)
+ * @param {number} min   - valor real mínimo informado pelo usuário
+ * @param {number} max   - valor real máximo informado pelo usuário
+ * @param {number} alpha - valor axial do PCC (ignorado se type !== 'PCC')
+ * @returns {number} valor real
+ */
+function decodeReal(coded, min, max, alpha) {
+  if (STATE.type === 'PCC' && alpha && alpha > 0) {
+    // ±α ↔ min/max:  X_real = centro + (coded/α) × metade_faixa
+    const centro = (min + max) / 2;
+    const meiafaixa = (max - min) / 2;
+    return centro + (coded / alpha) * meiafaixa;
+  }
+  // BBD, Fatorial, D-Optimal: ±1 ↔ min/max (fórmula original)
+  return decode(coded, min, max);
+}
+
+/**
+ * encodeReal — conversão real → codificado CORRETA para cada tipo de design.
+ *
+ * Para PCC:  coded = (X_real - X_centro) / meiafaixa × α
+ * Para demais: fórmula original (±1 ↔ min/max)
+ *
+ * @param {number} val   - valor real
+ * @param {number} min   - valor real mínimo informado pelo usuário
+ * @param {number} max   - valor real máximo informado pelo usuário
+ * @param {number} alpha - valor axial do PCC
+ * @returns {number} valor codificado
+ */
+function encodeReal(val, min, max, alpha) {
+  if (STATE.type === 'PCC' && alpha && alpha > 0) {
+    const centro = (min + max) / 2;
+    const meiafaixa = (max - min) / 2;
+    return ((val - centro) / meiafaixa) * alpha;
+  }
+  return encode(val, min, max);
+}
+
 function linspace(a, b, n) {
   return Array.from({length:n}, (_,i) => a + i*(b-a)/(n-1));
 }
@@ -1777,7 +1828,7 @@ function renderMatrix() {
     let cells = `<td style="color:var(--t3); font-family:var(--mono);">${i+1}</td>
                  <td class="${tClass}">${tLabel}</td>`;
     row.forEach((v,j) => {
-      const rv = decode(v, factors[j].min, factors[j].max);
+      const rv = decodeReal(v, factors[j].min, factors[j].max, STATE.alpha);
       const cls = v>0.5?'cv-pos':v<-0.5?'cv-neg':Math.abs(v)<0.01?'cv-zero':'cv-ax';
       cells += `<td class="${cls}">${v.toFixed(3)}</td><td>${rv.toFixed(3)}</td>`;
     });
@@ -2246,6 +2297,7 @@ function renderBoxplot() {
     traces.push({
       type: 'box',
       y: vals,
+       width: 0.8 ,
       name: `E${i+1}`,
       boxpoints: 'all',       // mostra cada ponto individual das réplicas
       jitter: 0.4,
@@ -2311,7 +2363,7 @@ function updatePlots() {
   factors.forEach((f,i) => {
     if (i===fxi||i===fyi) return;
     const el=document.getElementById(`fixed-${i}`);
-    fixedCoded[i] = el ? encode(parseFloat(el.value)||0, f.min, f.max) : 0;
+    fixedCoded[i] = el ? encodeReal(parseFloat(el.value)||0, f.min, f.max, alpha) : 0;
   });
 
   const nG=45;
@@ -2322,8 +2374,8 @@ function updatePlots() {
     return reg_predict(coded);
   }));
 
-  const xReal=xv.map(v=>decode(v,factors[fxi].min,factors[fxi].max));
-  const yReal=yv.map(v=>decode(v,factors[fyi].min,factors[fyi].max));
+  const xReal=xv.map(v=>decodeReal(v,factors[fxi].min,factors[fxi].max,alpha));
+  const yReal=yv.map(v=>decodeReal(v,factors[fyi].min,factors[fyi].max,alpha));
 
   const lo = plotLayout();
   const cscale=[
@@ -2333,8 +2385,8 @@ function updatePlots() {
   // Ponto ótimo
   const optTraces = [];
   if (optResult) {
-    const ox = decode(optResult.xCoded[fxi], factors[fxi].min, factors[fxi].max);
-    const oy = decode(optResult.xCoded[fyi], factors[fyi].min, factors[fyi].max);
+    const ox = decodeReal(optResult.xCoded[fxi], factors[fxi].min, factors[fxi].max, alpha);
+    const oy = decodeReal(optResult.xCoded[fyi], factors[fyi].min, factors[fyi].max, alpha);
     optTraces.push({
       type:'scatter3d', mode:'markers',
       x:[ox], y:[oy], z:[optResult.yPred+0.5],
@@ -2348,8 +2400,8 @@ function updatePlots() {
   // Pontos experimentais
   const expX=[], expY=[], expZ=[];
   STATE.design.forEach((row,i)=>{
-    expX.push(decode(row[fxi],factors[fxi].min,factors[fxi].max));
-    expY.push(decode(row[fyi],factors[fyi].min,factors[fyi].max));
+    expX.push(decodeReal(row[fxi],factors[fxi].min,factors[fxi].max,alpha));
+    expY.push(decodeReal(row[fyi],factors[fyi].min,factors[fyi].max,alpha));
     expZ.push(STATE.stats.yhat[i]);
   });
 
@@ -2389,8 +2441,8 @@ function updatePlots() {
     hovertemplate:`${factors[fxi].name}=%{x:.3f}<br>${factors[fyi].name}=%{y:.3f}<extra></extra>`
   }];
   if (optResult) {
-    const ox=decode(optResult.xCoded[fxi],factors[fxi].min,factors[fxi].max);
-    const oy=decode(optResult.xCoded[fyi],factors[fyi].min,factors[fyi].max);
+    const ox=decodeReal(optResult.xCoded[fxi],factors[fxi].min,factors[fxi].max,alpha);
+    const oy=decodeReal(optResult.xCoded[fyi],factors[fyi].min,factors[fyi].max,alpha);
     contTraces.push({
       type:'scatter', mode:'markers+text',
       x:[ox], y:[oy], text:['★ Ótimo'], textposition:'top center',
@@ -2448,7 +2500,7 @@ function runOpt() {
     <div class="opt-factor-item">
       <span style="color:var(--t2);font-size:12px;">${f.name}</span>
       <div style="text-align:right">
-        <div style="font-family:var(--mono);font-weight:700;">${decode(result.xCoded[i],f.min,f.max).toFixed(4)}</div>
+        <div style="font-family:var(--mono);font-weight:700;">${decodeReal(result.xCoded[i],f.min,f.max,STATE.alpha).toFixed(4)}</div>
         <div style="font-size:10px;color:var(--t3);">cod: ${result.xCoded[i].toFixed(4)}</div>
       </div>
     </div>`).join('');
@@ -2588,7 +2640,7 @@ async function generatePDF() {
     if (y > ph-50) { doc.addPage(); y=mg; }
     hdr('5. Resultado da Otimização', [251,191,36]);
     STATE.factors.forEach((f,i) => {
-      const rv = decode(STATE.optResult.xCoded[i], f.min, f.max);
+      const rv = decodeReal(STATE.optResult.xCoded[i], f.min, f.max, STATE.alpha);
       row([f.name+':', rv.toFixed(4), '(cod: '+STATE.optResult.xCoded[i].toFixed(4)+')'], [35,25,50]);
     });
     nl(3);
@@ -2640,7 +2692,7 @@ function exportCSV() {
 
   const lines = design.map((row,i) => {
     const type = runTypes[i];
-    const factCols = row.flatMap((v,j) => [v.toFixed(4), decode(v,factors[j].min,factors[j].max).toFixed(4)]);
+    const factCols = row.flatMap((v,j) => [v.toFixed(4), decodeReal(v,factors[j].min,factors[j].max,STATE.alpha).toFixed(4)]);
     const yCols = Array.from({length:globalRep},(_,r)=>{
       const el=document.getElementById(`y-${i}-${r}`);
       return el?.value||'';
@@ -2708,5 +2760,3 @@ document.addEventListener('DOMContentLoaded', init);
 </script>
 </body>
 </html>
-
-     
